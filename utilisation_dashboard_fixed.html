@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Utilisation Dashboard</title>
+<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+<style>
+  body { margin:0; font-family: Arial, sans-serif; background:#121212; color:#e0e0e0; }
+  .container { padding:16px; }
+  h1 { margin-top:0; color:#ffffff; text-align:center; }
+  .panel { background:#1e1e1e; border-radius:8px; padding:16px; margin-bottom:20px; }
+  .panel label { display:block; margin-bottom:4px; }
+  .panel select, .panel input[type="date"], .panel input[type="number"] {
+    width:100%; padding:6px; margin-bottom:12px; border:1px solid #444; border-radius:4px;
+    background:#2a2a2a; color:#fff;
+  }
+  .kpi-row { display:flex; flex-wrap:wrap; gap:12px; }
+  .kpi { flex:1 1 150px; background:#1e1e1e; border-radius:6px; padding:12px; text-align:center; }
+  .kpi .label { font-size:0.8em; color:#aaaaaa; margin-bottom:4px; }
+  .kpi .value { font-size:1.8em; font-weight:bold; color:#ffffff; }
+  #charts { display:flex; flex-wrap:wrap; gap:20px; }
+  .chart { flex:1 1 300px; min-width:300px; min-height:300px; background:#1e1e1e; border-radius:6px; padding:12px; }
+  table { width:100%; border-collapse:collapse; margin-top:16px; }
+  th, td { padding:8px; text-align:left; border-bottom:1px solid #333; }
+  th { background:#2a2a2a; color:#ffffff; }
+  tr:nth-child(even) { background:#1e1e1e; }
+  .status-low { color:#ff6666; }
+  .status-medium { color:#ffa726; }
+  .status-healthy { color:#66bb6a; }
+  .status-high { color:#29b6f6; }
+  .hidden { display:none; }
+  .instructions { font-size:0.9em; margin-bottom:10px; color:#cccccc; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>Utilisation Dashboard</h1>
+
+  <div class="panel">
+    <div class="instructions">
+      Upload a JSON file (array of objects). After upload, map your fields and use filters to explore utilisation.
+      Data stays on your device.
+    </div>
+
+    <input type="file" id="fileInput" accept=".json">
+
+    <div id="mappingPanel" class="hidden">
+      <h3>Field Mapping</h3>
+      <label for="dateField">Date field</label>
+      <select id="dateField"></select>
+
+      <label for="nameField">Name field</label>
+      <select id="nameField"></select>
+
+      <label for="deptField">Department field</label>
+      <select id="deptField"></select>
+
+      <label for="workedField">Worked Hours field</label>
+      <select id="workedField"></select>
+
+      <label for="availField">Available Hours field</label>
+      <select id="availField"></select>
+
+      <label for="teamField">Team field (optional)</label>
+      <select id="teamField"></select>
+    </div>
+
+    <div id="filterPanel" class="hidden">
+      <h3>Filters</h3>
+      <label>Start Date</label>
+      <input type="date" id="startDate">
+
+      <label>End Date</label>
+      <input type="date" id="endDate">
+
+      <label>Department</label>
+      <select id="deptFilter"></select>
+
+      <label>Team</label>
+      <select id="teamFilter"></select>
+
+      <label>Target Utilisation (%)</label>
+      <input type="number" id="targetUtil" min="0" max="100" step="1" value="75">
+    </div>
+  </div>
+
+  <div class="kpi-row" id="kpiRow"></div>
+
+  <div id="charts">
+    <div id="trendChart" class="chart"></div>
+    <div id="deptChart" class="chart"></div>
+    <div id="deptWorkChart" class="chart"></div>
+  </div>
+
+  <div id="tablesSection" class="hidden">
+    <h3>Top Under-utilised &amp; Over-utilised People</h3>
+
+    <table id="underTable">
+      <thead>
+        <tr><th colspan="7">Top 10 Under-utilised</th></tr>
+        <tr>
+          <th>Name</th><th>Department</th><th>Team</th><th>Util %</th><th>Worked</th><th>Available</th><th>Status</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+
+    <table id="overTable">
+      <thead>
+        <tr><th colspan="7">Top 10 Over-utilised</th></tr>
+        <tr>
+          <th>Name</th><th>Department</th><th>Team</th><th>Util %</th><th>Worked</th><th>Available</th><th>Status</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+let rawData = [];
+let mappedData = [];
+let uniqueDepartments = [];
+let uniqueTeams = [];
+let fieldMap = { date: '', name: '', dept: '', worked: '', avail: '', team: '' };
+
+function populateSelect(select, options, includeAll=true) {
+  select.innerHTML = '';
+  if (includeAll) {
+    const optAll = document.createElement('option');
+    optAll.value = 'All';
+    optAll.textContent = 'All';
+    select.appendChild(optAll);
+  }
+  options.forEach(val => {
+    const opt = document.createElement('option');
+    opt.value = val;
+    opt.textContent = val;
+    select.appendChild(opt);
+  });
+}
+
+function parseDate(value) {
+  const d = new Date(value);
+  return isNaN(d) ? null : d;
+}
+
+function getWeekStart(date) {
+  const d = new Date(date);
+  const day = d.getUTCDay();
+  const diff = (day + 6) % 7; // Monday=0
+  d.setUTCDate(d.getUTCDate() - diff);
+  d.setUTCHours(0,0,0,0);
+  return d.toISOString().split('T')[0];
+}
+
+function chartLayout(title, xTitle, yTitle, opts={}) {
+  const layout = {
+    title: { text: title, font: { color: '#ffffff' } },
+    paper_bgcolor: '#1e1e1e',
+    plot_bgcolor: '#1e1e1e',
+    margin: { t: 50, b: 80, l: 55, r: 20 },
+    xaxis: { tickfont: { color: '#ffffff' }, title: { text: xTitle, font: { color: '#ffffff' } }, gridcolor: '#333', tickangle: opts.xTickAngle ?? 0 },
+    yaxis: { tickfont: { color: '#ffffff' }, title: { text: yTitle, font: { color: '#ffffff' } }, gridcolor: '#333' }
+  };
+  if (opts.yTickFormat) layout.yaxis.tickformat = opts.yTickFormat;
+  return layout;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+
+function updateData() {
+  mappedData = [];
+  rawData.forEach(row => {
+    const dVal = row[fieldMap.date];
+    const name = row[fieldMap.name];
+    const dept = row[fieldMap.dept];
+    const worked = parseFloat(row[fieldMap.worked]);
+    const avail = parseFloat(row[fieldMap.avail]);
+    const team = fieldMap.team ? row[fieldMap.team] : '';
+    const dateObj = parseDate(dVal);
+
+    if (!dateObj || !name || !dept || isNaN(worked) || isNaN(avail) || avail <= 0) return;
+
+    mappedData.push({
+      date: dateObj,
+      weekStart: getWeekStart(dateObj),
+      name: String(name),
+      dept: String(dept),
+      team: team ? String(team) : '',
+      worked: worked,
+      avail: avail
+    });
+  });
+
+  applyFiltersAndRender();
+}
+
+function fillTable(tableId, dataArr) {
+  const tbody = document.querySelector('#' + tableId + ' tbody');
+  tbody.innerHTML = '';
+  dataArr.forEach(row => {
+    const utilPct = row.avail > 0 ? (row.util * 100) : 0;
+
+    const statusClass =
+      utilPct < 50 ? 'status-low' :
+      utilPct < 75 ? 'status-medium' :
+      utilPct <= 90 ? 'status-healthy' : 'status-high';
+
+    const statusText =
+      utilPct < 50 ? 'Low' :
+      utilPct < 75 ? 'Medium' :
+      utilPct <= 90 ? 'Healthy' : 'High';
+
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${escapeHtml(row.name)}</td>
+      <td>${escapeHtml(row.dept)}</td>
+      <td>${escapeHtml(row.team || '')}</td>
+      <td>${utilPct.toFixed(1)}%</td>
+      <td>${row.worked.toFixed(1)}</td>
+      <td>${row.avail.toFixed(1)}</td>
+      <td class="${statusClass}">${statusText}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function applyFiltersAndRender() {
+  if (mappedData.length === 0) return;
+
+  const startDate = parseDate(document.getElementById('startDate').value);
+  const endDate = parseDate(document.getElementById('endDate').value);
+  const deptFilter = document.getElementById('deptFilter').value;
+  const teamFilter = document.getElementById('teamFilter').value;
+  const targetUtil = (parseFloat(document.getElementById('targetUtil').value) || 75) / 100.0;
+
+  const filtered = mappedData.filter(item => {
+    if (startDate && item.date < startDate) return false;
+    if (endDate && item.date > endDate) return false;
+    if (deptFilter !== 'All' && item.dept !== deptFilter) return false;
+    if (teamFilter !== 'All' && item.team !== teamFilter) return false;
+    return true;
+  });
+
+  const totalWorked = filtered.reduce((acc, r) => acc + r.worked, 0);
+  const totalAvail = filtered.reduce((acc, r) => acc + r.avail, 0);
+  const avgUtil = totalAvail > 0 ? (totalWorked / totalAvail) : 0;
+  const headcount = new Set(filtered.map(r => r.name)).size;
+
+  const utilByPerson = {};
+  filtered.forEach(r => {
+    if (!utilByPerson[r.name]) utilByPerson[r.name] = { worked: 0, avail: 0, dept: r.dept, team: r.team };
+    utilByPerson[r.name].worked += r.worked;
+    utilByPerson[r.name].avail += r.avail;
+  });
+
+  const underCount = Object.values(utilByPerson).filter(p => p.avail > 0 && (p.worked / p.avail) < targetUtil).length;
+  const overCount = Object.values(utilByPerson).filter(p => p.avail > 0 && (p.worked / p.avail) > 0.9).length;
+
+  const kpiRow = document.getElementById('kpiRow');
+  kpiRow.innerHTML = '';
+  const kpis = [
+    { label: 'Avg Util %', value: (avgUtil * 100).toFixed(1) + '%' },
+    { label: 'Headcount', value: headcount },
+    { label: 'Worked Hours', value: totalWorked.toFixed(1) },
+    { label: 'Available Hours', value: totalAvail.toFixed(1) },
+    { label: 'Under Target', value: underCount },
+    { label: 'Over 90%', value: overCount }
+  ];
+  kpis.forEach(k => {
+    const div = document.createElement('div');
+    div.className = 'kpi';
+    div.innerHTML = '<div class="label">' + k.label + '</div><div class="value">' + k.value + '</div>';
+    kpiRow.appendChild(div);
+  });
+
+  // Weekly trend
+  const weeklyMap = {};
+  filtered.forEach(r => {
+    if (!weeklyMap[r.weekStart]) weeklyMap[r.weekStart] = { worked: 0, avail: 0 };
+    weeklyMap[r.weekStart].worked += r.worked;
+    weeklyMap[r.weekStart].avail += r.avail;
+  });
+  const weeks = Object.keys(weeklyMap).sort();
+  const trendY = weeks.map(w => weeklyMap[w].avail > 0 ? weeklyMap[w].worked / weeklyMap[w].avail : 0);
+
+  Plotly.newPlot('trendChart', [{
+    x: weeks, y: trendY, type: 'scatter', mode: 'lines+markers'
+  }], chartLayout('Weekly Utilisation %', 'Week Starting', 'Utilisation %', { yTickFormat: '.0%' }), {displayModeBar:false, responsive:true});
+
+  // Department aggregation
+  const deptMap = {};
+  filtered.forEach(r => {
+    if (!deptMap[r.dept]) deptMap[r.dept] = { worked: 0, avail: 0 };
+    deptMap[r.dept].worked += r.worked;
+    deptMap[r.dept].avail += r.avail;
+  });
+  const deptNames = Object.keys(deptMap).sort();
+  const deptUtil = deptNames.map(d => deptMap[d].avail > 0 ? deptMap[d].worked / deptMap[d].avail : 0);
+
+  Plotly.newPlot('deptChart', [{
+    x: deptNames, y: deptUtil, type: 'bar'
+  }], chartLayout('Utilisation % by Department', 'Department', 'Utilisation %', { yTickFormat: '.0%', xTickAngle: -30 }), {displayModeBar:false, responsive:true});
+
+  // Worked vs Available
+  const deptWorked = deptNames.map(d => deptMap[d].worked);
+  const deptAvail = deptNames.map(d => deptMap[d].avail);
+
+  Plotly.newPlot('deptWorkChart', [
+    { x: deptNames, y: deptWorked, name: 'Worked Hours', type: 'bar' },
+    { x: deptNames, y: deptAvail, name: 'Available Hours', type: 'bar' }
+  ], {
+    ...chartLayout('Worked vs Available by Department', 'Department', 'Hours', { xTickAngle: -30 }),
+    barmode: 'group',
+    legend: { font: { color: '#ffffff' } }
+  }, {displayModeBar:false, responsive:true});
+
+  // Top tables
+  const personArray = Object.entries(utilByPerson).map(([name, data]) => {
+    const util = data.avail > 0 ? (data.worked / data.avail) : 0;
+    return { name, dept: data.dept, team: data.team, util, worked: data.worked, avail: data.avail };
+  });
+
+  const topUnder = [...personArray].sort((a,b) => a.util - b.util).slice(0,10);
+  const topOver = [...personArray].sort((a,b) => b.util - a.util).slice(0,10);
+
+  fillTable('underTable', topUnder);
+  fillTable('overTable', topOver);
+  document.getElementById('tablesSection').classList.remove('hidden');
+}
+
+document.getElementById('fileInput').addEventListener('change', function() {
+  const file = this.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!Array.isArray(data)) throw new Error('JSON must be an array of objects');
+
+      rawData = data.filter(x => x && typeof x === 'object' && !Array.isArray(x));
+      const keys = Object.keys(rawData[0] || {});
+      if (keys.length === 0) throw new Error('No keys found in first row');
+
+      ['dateField','nameField','deptField','workedField','availField','teamField'].forEach(id => {
+        const sel = document.getElementById(id);
+        sel.innerHTML = '';
+        const optNone = document.createElement('option');
+        optNone.value = '';
+        optNone.textContent = '-- Select --';
+        sel.appendChild(optNone);
+        keys.forEach(k => {
+          const opt = document.createElement('option');
+          opt.value = k;
+          opt.textContent = k;
+          sel.appendChild(opt);
+        });
+      });
+
+      document.getElementById('mappingPanel').classList.remove('hidden');
+    } catch (err) {
+      alert('Error parsing JSON: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+});
+
+['dateField','nameField','deptField','workedField','availField','teamField'].forEach(id => {
+  document.getElementById(id).addEventListener('change', function() {
+    fieldMap.date = document.getElementById('dateField').value;
+    fieldMap.name = document.getElementById('nameField').value;
+    fieldMap.dept = document.getElementById('deptField').value;
+    fieldMap.worked = document.getElementById('workedField').value;
+    fieldMap.avail = document.getElementById('availField').value;
+    fieldMap.team = document.getElementById('teamField').value;
+
+    if (fieldMap.date && fieldMap.name && fieldMap.dept && fieldMap.worked && fieldMap.avail) {
+      updateData();
+
+      uniqueDepartments = Array.from(new Set(mappedData.map(r => r.dept))).sort();
+      populateSelect(document.getElementById('deptFilter'), uniqueDepartments);
+
+      uniqueTeams = Array.from(new Set(mappedData.map(r => r.team).filter(Boolean))).sort();
+      populateSelect(document.getElementById('teamFilter'), uniqueTeams, true);
+      document.getElementById('teamFilter').disabled = (uniqueTeams.length === 0);
+
+      const times = mappedData.map(r => r.date.getTime());
+      const minDate = new Date(Math.min(...times));
+      const maxDate = new Date(Math.max(...times));
+      document.getElementById('startDate').value = minDate.toISOString().split('T')[0];
+      document.getElementById('endDate').value = maxDate.toISOString().split('T')[0];
+
+      document.getElementById('filterPanel').classList.remove('hidden');
+      applyFiltersAndRender();
+    }
+  });
+});
+
+['startDate','endDate','deptFilter','teamFilter','targetUtil'].forEach(id => {
+  document.getElementById(id).addEventListener('change', applyFiltersAndRender);
+});
+</script>
+</body>
+</html>
