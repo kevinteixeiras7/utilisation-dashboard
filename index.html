@@ -403,6 +403,50 @@ document.getElementById('fileInput').addEventListener('change', function() {
 ['startDate','endDate','deptFilter','teamFilter','targetUtil'].forEach(id => {
   document.getElementById(id).addEventListener('change', applyFiltersAndRender);
 });
+
+  async function loadBundledData() {
+  try {
+    const res = await fetch("./data.json", { cache: "no-store" });
+    if (!res.ok) throw new Error("data.json not found");
+    const json = await res.json();
+    rawData = json.filter(x => x && typeof x === "object" && !Array.isArray(x));
+
+    // map your fields to the correct keys in data.json
+    fieldMap = {
+      date: "Date",        // change to match your JSON's date key
+      name: "Name",        // change to match your JSON's name key
+      dept: "Department",  // change to match your JSON's department key
+      worked: "Client Hours",    // change to match your JSON's worked-hours key
+      avail: "Monthly Capacity",  // change to match your JSON's available-hours key
+      team: ""             // optional: set if you have a team field
+    };
+
+    updateData();
+
+    uniqueDepartments = Array.from(new Set(mappedData.map(r => r.dept))).sort();
+    populateSelect(document.getElementById("deptFilter"), uniqueDepartments);
+    uniqueTeams = Array.from(new Set(mappedData.map(r => r.team).filter(Boolean))).sort();
+    populateSelect(document.getElementById("teamFilter"), uniqueTeams, true);
+    document.getElementById("teamFilter").disabled = uniqueTeams.length === 0;
+
+    const times = mappedData.map(r => r.date.getTime());
+    const minDate = new Date(Math.min(...times));
+    const maxDate = new Date(Math.max(...times));
+    document.getElementById("startDate").value = minDate.toISOString().split("T")[0];
+    document.getElementById("endDate").value   = maxDate.toISOString().split("T")[0];
+
+    document.getElementById("filterPanel").classList.remove("hidden");
+    applyFiltersAndRender();
+
+    // hide upload/mapping panel
+    const setupPanel = document.querySelector(".panel");
+    if (setupPanel) setupPanel.style.display = "none";
+  } catch (err) {
+    console.warn("Auto-load failed:", err);
+  }
+}
+document.addEventListener("DOMContentLoaded", loadBundledData);
+
 </script>
 </body>
 </html>
